@@ -9,7 +9,7 @@
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-set(LIB_BPLUSTREE_SRC xxx.cc)
+set(LIB_BPLUSTREE_SRC BPlusTree.cc)
 
-add_library(BPlusTree ${LIB_BPLUSTREE_SRC})
+add_library(BPTree ${LIB_BPLUSTREE_SRC})
 

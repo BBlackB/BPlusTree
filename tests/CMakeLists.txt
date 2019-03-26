@@ -11,4 +11,5 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 
 set(TEST main.cc)
 
-add_executable(test ${TEST})
+add_executable(bptest ${TEST})
+target_link_libraries(bptest BPTree)

@@ -49,5 +49,6 @@ set(CMAKE_CXX_FLAGS_MINSIZEREL        "-Os")
 set(CMAKE_CXX_RELWITHDEBINFO_RELEASE  "-O2")
 
 add_subdirectory(src)
+add_subdirectory(tests)
 
 message(STATUS "### Done ###")

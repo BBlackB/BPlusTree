@@ -10,7 +10,8 @@
 
 int main(int argc, char const *argv[])
 {
-    BPlusTree bpTree("data.index");
+    BPlusTree bpTree("data.index", 128);
+    bpTree.commandHander();
 
     return 0;
 }
