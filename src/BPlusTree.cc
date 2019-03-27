@@ -14,10 +14,10 @@ BPlusTree::BPlusTree(const char *fileName, int blockSize)
 {
     char bootFile[32];
     off_t freeBlock;
-    sprintf(bootFile, "%s.boot", fileName);
     int fd = open(bootFile, O_RDONLY, 0644);
     // 读取配置
     if (fd > 0) {
+        printf("load boot file...\n");
         root_ = offsetLoad(fd);
         blockSize_ = offsetLoad(fd);
         fileSize_ = offsetLoad(fd);
@@ -94,7 +94,7 @@ void BPlusTree::help()
 off_t BPlusTree::offsetLoad(int fd)
 {
     char buf[ADDR_OFFSET_LENTH];
-    int len = write(fd, buf, ADDR_OFFSET_LENTH);
+    int len = read(fd, buf, ADDR_OFFSET_LENTH);
     return len > 0 ? pchar_2_off_t(buf, sizeof buf) : INVALID_OFFSET;
 }
 
@@ -102,7 +102,6 @@ int BPlusTree::offsetStore(int fd, off_t offset)
 {
     char buf[ADDR_OFFSET_LENTH];
     off_t_2_pchar(offset, buf, sizeof buf);
-    printf("buf = %s", buf);
     return write(fd, buf, sizeof buf) == ADDR_OFFSET_LENTH ? S_OK : S_FALSE;
 }
 
@@ -121,67 +120,8 @@ off_t BPlusTree::pchar_2_off_t(const char *str, size_t size)
 // off_t转换为字符串
 void BPlusTree::off_t_2_pchar(off_t offset, char *buf, int len)
 {
-    printf("offset = %lx\n", offset);
     while (len-- > 0) {
         buf[len] = offset & 0xff;
-        printf("%c\n", buf[len]);
         offset >>= 8;
     }
 }
-
-/*
-off_t pchar_2_off_t(const char* str, size_t size) {
-    off_t ret = 0;
-    size_t i;
-    for (i = 0; i < size; ++i) {
-        ret <<= 8;
-        ret |= (unsigned char) str[i];
-        printf("str[%ld] = %d\n", i, str[i]);
-    }
-    return ret;
-}
-
-void off_t_2_pchar(off_t offset, char *buf, int len)
-{
-        printf("offset = %lx\n", offset);
-    while (len-- > 0)
-    {
-        buf[len] = offset & 0xff;
-        printf("buf[%d] = %d\n", len, buf[len]);
-        offset >>= 8;
-    }
-}
-
-void showStr(const char *str, int len)
-{
-    for (int i = 0; i< len; i++)
-        printf("%d ",str[i]);
-    printf("\n");
-
-}
-
-int main()
-{
-    int fd = open("test.txt", O_WRONLY | O_CREAT, 0644);
-
-    char buf[8];
-    off_t tmp = 0x12345678;
-    off_t_2_pchar(tmp, buf, sizeof(buf));
-    printf("buf = %s\n", buf);
-    write(fd, buf, sizeof buf);
-    close(fd);
-
-    showStr(buf, sizeof buf);
-
-    fd = open("test.txt", O_RDONLY, 0644);
-
-    char antherbuf[8];
-    read(fd, antherbuf, sizeof antherbuf);
-    // strcpy(antherbuf, buf);
-    showStr(antherbuf, sizeof antherbuf);
-
-    off_t antherOffset = pchar_2_off_t(antherbuf, sizeof antherbuf);
-    printf("offset = %lx\n", antherOffset);
-    pause();
-
-*/
