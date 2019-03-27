@@ -6,8 +6,12 @@
  * @author Liu GuangRui
  * @email 675040625@qq.com
  */
-#include "BPlusTree.h"
 #include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include "BPlusTree.h"
 
 BPlusTree::BPlusTree(const char *fileName, int blockSize)
     : fileName_(fileName)
@@ -69,9 +73,13 @@ void BPlusTree::commandHander()
 {
     while (true) {
         printf("Please input your command.(Type 'h' for help):");
-        switch (getchar()) {
+        fgets(cmdBuf_, sizeof cmdBuf_, stdin);
+        switch (cmdBuf_[0]) {
         case 'h':
             help();
+            break;
+        case 'r':
+            insertHandler();
             break;
         case 'q':
             return;
@@ -91,6 +99,8 @@ void BPlusTree::help()
     printf("q: Quit.\n");
 }
 
+int BPlusTree::insert(key_t key, off_t value) {}
+
 off_t BPlusTree::offsetLoad(int fd)
 {
     char buf[ADDR_OFFSET_LENTH];
@@ -103,6 +113,13 @@ int BPlusTree::offsetStore(int fd, off_t offset)
     char buf[ADDR_OFFSET_LENTH];
     off_t_2_pchar(offset, buf, sizeof buf);
     return write(fd, buf, sizeof buf) == ADDR_OFFSET_LENTH ? S_OK : S_FALSE;
+}
+
+int BPlusTree::insertHandler()
+{
+    char *s = strstr(cmdBuf_, " ");
+    int n = atoi(++s);
+    insert(n, n);
 }
 
 // 字符串转换为off_t

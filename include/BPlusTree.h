@@ -8,14 +8,12 @@
  */
 #ifndef __BPLUSTREE_H__
 #define __BPLUSTREE_H__
-#include <stdio.h>
-#include <unistd.h>
-#include <string.h>
-#include <fcntl.h>
 #include <list>
+#include <unistd.h>
 
 // #define BPTREE_DEGREE 3
 #define key_t long
+
 #define S_OK 0
 #define S_FALSE -1
 
@@ -49,6 +47,7 @@ class BPlusTree
     const char *fileName_;        // 索引文件
     int fd_;                      // 索引文件的描述符
     int DEGREE;                   // 一个block中的最大节点
+    char cmdBuf_[64];             // 保存命令字符串
 
   public:
     BPlusTree(const char *fileName, int blockSize);
@@ -60,6 +59,8 @@ class BPlusTree
   private:
     // 显示帮助信息
     void help();
+    // 增加数据
+    int insert(key_t key, off_t value);
     // 显示树中所有节点
     int dump();
 
@@ -68,6 +69,8 @@ class BPlusTree
     off_t offsetLoad(int fd);
     // 存一个偏移量
     int offsetStore(int fd, off_t offset);
+    // 数据插入之前的预处理
+    int insertHandler();
 
   private:
     // 字符串转换为off_t
