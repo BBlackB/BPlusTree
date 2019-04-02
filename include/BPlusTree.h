@@ -13,6 +13,7 @@
 
 // #define BPTREE_DEGREE 3
 #define key_t long
+#define data_t long
 
 #define S_OK 0
 #define S_FALSE -1
@@ -50,13 +51,14 @@ class BPlusTree
     off_t blockSize_;             // 块大小
     off_t fileSize_;              // 指向文件末尾,便于创建新的block
     std::list<off_t> freeBlocks_; // 记录空闲块
-    const char *fileName_;        // 索引文件
-    int fd_;                      // 索引文件的描述符
-    int DEGREE;                   // 一个block中的最大节点数
-    char cmdBuf_[64];             // 保存命令字符串
-    Node *rootCache_;             // root节点缓存
-    Node *caches_;                // 块缓存
-    bool used_[MAX_CACHE_NUM];    // 标记使用的缓存
+    std::list<off_t> traceNode_; // 记录经过的父节点(Node结构可省去父指针)
+    const char *fileName_;     // 索引文件
+    int fd_;                   // 索引文件的描述符
+    int DEGREE;                // 一个block中的最大节点数
+    char cmdBuf_[64];          // 保存命令字符串
+    Node *rootCache_;          // root节点缓存
+    Node *caches_;             // 块缓存
+    bool used_[MAX_CACHE_NUM]; // 标记使用的缓存
 
   public:
     BPlusTree(const char *fileName, int blockSize);
@@ -69,7 +71,7 @@ class BPlusTree
     // 显示帮助信息
     void help();
     // 增加数据
-    int insert(key_t key, long value);
+    int insert(key_t key, data_t value);
     // 显示树中所有节点
     int dump();
 
@@ -77,16 +79,16 @@ class BPlusTree
     // 获取node中key的位置
     inline key_t *key(Node *node) { return (key_t *) (node + sizeof(Node)); }
     // 获取node中data的位置
-    inline long *data(Node *node)
+    inline data_t *data(Node *node)
     {
-        return (long *) (node + sizeof(Node)) + DEGREE * sizeof(key_t);
+        return (data_t *) (node + sizeof(Node)) + DEGREE * sizeof(key_t);
     }
     // 获取node中子节点的位置
-    inline off_t subNode(Node *node, int pos)
+    inline off_t *subNode(Node *node, int pos)
     {
         // 最后一个位置的子节点偏移保存在node节点中
-        if (pos == node->count) return node->lastOffset;
-        return ((off_t *) (node + sizeof(Node) + DEGREE * sizeof(key_t)))[pos];
+        if (pos == node->count) return &node->lastOffset;
+        return &((off_t *) (node + sizeof(Node) + DEGREE * sizeof(key_t)))[pos];
     }
 
     // 判断是否为叶子节点
@@ -106,40 +108,51 @@ class BPlusTree
     void cacheDefer(const Node *node);
 
     /***在内存中命名为node***/
-
     // 在cache中创建新的节点
     Node *newNode();
     // 在cache中创建新的非叶子节点
     Node *newNonLeaf();
     // 在cache中创建新的叶子节点
     Node *newLeaf();
+    // 在节点内部查找
+    int searchInNode(Node *node, key_t target);
 
     /***在磁盘中命名为block***/
-
     // 增加新的block
     off_t appendBlock(Node *node);
     // block写回磁盘
     int blockFlush(Node *node);
     // 把block取到cache中(不可覆盖)
     Node *fetchBlock(off_t offset);
-
     // 把block读到cache中(可覆盖)
     Node *locateNode(off_t offset);
-    // 在节点内部查找
-    int searchInNode(Node *node, key_t target);
 
     // 插入叶子节点
-    int insertLeaf(Node *node, key_t key, long value);
+    int insertLeaf(Node *node, key_t key, data_t value);
     // 简单方式插入叶子节点(不分裂)
-    void simpleInsertLeaf(Node *leaf, int pos, key_t k, long value);
+    void simpleInsertLeaf(Node *leaf, int pos, key_t k, data_t value);
     // 叶子节点左分裂
-    int spiltLeftLeaf(Node *leaf, Node *left, key_t k, long value, int pos);
+    key_t splitLeftLeaf(Node *leaf, Node *left, key_t k, data_t value, int pos);
     // 叶子节点右分裂
-    int spiltLeftLeaf(Node *leaf, Node *right, key_t k, long value, int pos);
+    key_t
+    splitRightLeaf(Node *leaf, Node *right, key_t k, data_t value, int pos);
     // 增加左叶子节点
     void addLeftNode(Node *node, Node *left);
     // 增加右叶子节点
     void addRightNode(Node *node, Node *right);
+
+    // 更新父节点
+    int updateParentNode(Node *leftChild, Node *rightChild, key_t k);
+
+    // 在非叶子节点中插入
+    int insertNonLeaf(Node *node, Node *leftChild, Node *rightChild, key_t k);
+    // 简单方式插入非叶子节点
+    void simpleInsertNonLeaf(
+        Node *node,
+        int pos,
+        key_t k,
+        Node *leftChild,
+        Node *rightChild);
 
   private:
     // 字符串转换为off_t

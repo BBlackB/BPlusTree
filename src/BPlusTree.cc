@@ -112,20 +112,26 @@ void BPlusTree::help()
     printf("q: Quit.\n");
 }
 
-int BPlusTree::insert(key_t k, long value)
+int BPlusTree::insert(key_t k, data_t value)
 {
     Node *node = rootCache_;
+
+    // 清空traceNode_
+    traceNode_.clear();
+
     while (node != NULL) {
         if (isLeaf(node)) {
             insertLeaf(node, k, value);
 
         } else {
-            int pos = searchInNode(node, k);
+            // 记录父节点偏移
+            traceNode_.push_back(node->self);
 
+            int pos = searchInNode(node, k);
             if (pos >= 0)
-                node = locateNode(subNode(node, pos));
+                node = locateNode(*subNode(node, pos));
             else // 没有找到,则读取在此范围的block
-                node = locateNode(subNode(node, -pos));
+                node = locateNode(*subNode(node, -pos));
         }
     }
 
@@ -233,6 +239,8 @@ int BPlusTree::blockFlush(Node *node)
     int ret = pwrite(fd_, node, blockSize_, node->self);
     assert(ret == blockSize_);
     cacheDefer(node);
+
+    return S_OK;
 }
 
 Node *BPlusTree::fetchBlock(off_t offset)
@@ -290,7 +298,7 @@ int BPlusTree::searchInNode(Node *node, key_t target)
         return -high;
 }
 
-int BPlusTree::insertLeaf(Node *leaf, key_t k, long value)
+int BPlusTree::insertLeaf(Node *leaf, key_t k, data_t value)
 {
     int pos = searchInNode(leaf, k);
     if (pos >= 0 || pos != leaf->count) {
@@ -309,10 +317,14 @@ int BPlusTree::insertLeaf(Node *leaf, key_t k, long value)
     // block已满->分裂
     if (leaf->count == DEGREE) {
         int split = (DEGREE + 1) / 2;
+        // NOTE:another何时写回
         Node *anotherNode = newNode();
+        key_t splitkey;
 
         if (pos < split) { // TODO:left split
-        } else {           // TODO:right split
+            splitkey = splitLeftLeaf(leaf, anotherNode, k, value, pos);
+        } else { // TODO:right split
+            splitkey = splitRightLeaf(leaf, anotherNode, k, value, pos);
         }
     } else { // block未满->不分裂
         simpleInsertLeaf(leaf, pos, k, value);
@@ -322,7 +334,7 @@ int BPlusTree::insertLeaf(Node *leaf, key_t k, long value)
     return S_OK;
 }
 
-void BPlusTree::simpleInsertLeaf(Node *leaf, int pos, key_t k, long value)
+void BPlusTree::simpleInsertLeaf(Node *leaf, int pos, key_t k, data_t value)
 {
     // 若插入不是在末尾,则需要移动数据
     if (pos < leaf->count) {
@@ -334,7 +346,7 @@ void BPlusTree::simpleInsertLeaf(Node *leaf, int pos, key_t k, long value)
         memmove(
             &data(leaf)[pos + 1],
             &data(leaf)[pos],
-            (leaf->count - pos) * sizeof(long));
+            (leaf->count - pos) * sizeof(data_t));
     }
 
     key(leaf)[pos] = k;
@@ -342,14 +354,89 @@ void BPlusTree::simpleInsertLeaf(Node *leaf, int pos, key_t k, long value)
     leaf->count++;
 }
 
-int BPlusTree::spiltLeftLeaf(
+key_t BPlusTree::splitLeftLeaf(
     Node *leaf,
     Node *left,
     key_t k,
-    long value,
+    data_t value,
     int pos)
 {
-    int spilt = (DEGREE + 1) / 2;
+    // 从中间位置开始分裂
+    int split = (DEGREE + 1) / 2;
+
+    // 增加左叶子节点
+    addLeftNode(leaf, left);
+
+    left->count = split;
+    leaf->count = DEGREE - split + 1;
+
+    // 移动数据到left
+    if (pos != 0) {
+        memmove(&key(left)[0], &key(leaf)[0], pos * sizeof(key_t));
+        memmove(&data(left)[0], &data(leaf)[0], pos * sizeof(data_t));
+    }
+
+    key(left)[pos] = k;
+    data(left)[pos] = value;
+
+    // 继续移动剩余数据left
+    memmove(
+        &key(left)[pos + 1],
+        &key(leaf)[pos],
+        (split - pos - 1) * sizeof(key_t));
+    memmove(
+        &data(left)[pos + 1],
+        &data(leaf)[pos],
+        (split - pos - 1) * sizeof(data_t));
+
+    // 移动leaf数据
+    memmove(&key(leaf)[0], &key(leaf)[split - 1], leaf->count * sizeof(key_t));
+    memmove(
+        &data(leaf)[0], &data(leaf)[split - 1], leaf->count * sizeof(data_t));
+
+    // NOTE:叶子节点无需考虑lastOffset
+    // 分裂完成后,返回右节点的第一个key
+    return key(leaf)[0];
+}
+
+key_t BPlusTree::splitRightLeaf(
+    Node *leaf,
+    Node *right,
+    key_t k,
+    data_t value,
+    int pos)
+{
+    int split = (DEGREE + 1) / 2;
+
+    addRightNode(leaf, right);
+
+    leaf->count = split;
+    right->count = DEGREE - split + 1;
+
+    if (pos != split) {
+        memmove(
+            &key(right)[0], &key(leaf)[split], (pos - split) * sizeof(key_t));
+        memmove(
+            &data(right)[0],
+            &data(leaf)[split],
+            (pos - split) * sizeof(data_t));
+    }
+
+    key(right)[pos - split] = k;
+    data(right)[pos - split] = value;
+
+    if (pos != right->count) {
+        memmove(
+            &key(right)[pos - split + 1],
+            &key(leaf)[pos],
+            (DEGREE - pos) * sizeof(key_t));
+        memmove(
+            &data(right)[pos - split + 1],
+            &data(leaf)[pos],
+            (DEGREE - pos) * sizeof(data_t));
+    }
+
+    return key(right)[0];
 }
 
 void BPlusTree::addLeftNode(Node *node, Node *left)
@@ -361,6 +448,7 @@ void BPlusTree::addLeftNode(Node *node, Node *left)
     if (prev != NULL) {
         prev->next = left->self;
         left->prev = prev->self;
+        blockFlush(prev); // 写回磁盘
     } else {
         left->prev = INVALID_OFFSET;
     }
@@ -372,7 +460,98 @@ void BPlusTree::addRightNode(Node *node, Node *right)
 {
     appendBlock(right);
 
-    // TODO:同上函数
+    Node *next = fetchBlock(node->next);
+    if (next != NULL) {
+        next->prev = right->self;
+        right->next = next->self;
+        blockFlush(next); // 写回磁盘
+    } else {
+        right->next = INVALID_OFFSET;
+    }
+    right->prev = node->self;
+    node->next = right->self;
+}
+
+// 更新父节点
+int BPlusTree::updateParentNode(Node *leftChild, Node *rightChild, key_t k)
+{
+    // 没有父节点
+    if (traceNode_.empty()) {
+        // 创建父节点
+        Node *parent = newNonLeaf();
+        key(parent)[0] = k;
+        parent->count = 1;
+        *subNode(parent, 0) = leftChild->self;
+        *subNode(parent, 1) = rightChild->self;
+
+        // 设置root
+        root_ = appendBlock(parent);
+
+        // 全部刷进磁盘
+        blockFlush(leftChild);
+        blockFlush(rightChild);
+        blockFlush(parent);
+    } else {
+        // 取出父节点并增加一个key
+        off_t p = traceNode_.back();
+        traceNode_.pop_back();
+
+        // 在非叶子节点中插入key
+        insertNonLeaf(fetchBlock(p), leftChild, rightChild, k);
+    }
+}
+
+int BPlusTree::insertNonLeaf(
+    Node *node,
+    Node *leftChild,
+    Node *rightChild,
+    key_t k)
+{
+    int pos = searchInNode(node, k);
+    // TODO:暂不支持相同key
+    if (pos < 0 && pos > node->count) assert(0);
+
+    // 该节点已满
+    if (node->count == DEGREE) {
+        int split = (DEGREE + 1) / 2;
+        Node *anotherNode = newNonLeaf();
+        // TODO:分情况插入
+    } else {
+        // 该节点未满,直接简单插入
+    }
+}
+
+void BPlusTree::simpleInsertNonLeaf(
+    Node *node,
+    int pos,
+    key_t k,
+    Node *leftChild,
+    Node *rightChild)
+{
+    // 插入位置不在最后一个,则需要移动数据
+    if (pos != node->count) {
+        memmove(
+            &key(node)[pos + 1],
+            &key(node)[pos],
+            (node->count - pos) * sizeof(key_t));
+        // NOTE:最后一个偏移记录在lastOffset中
+        memmove(
+            subNode(node, pos + 2),
+            subNode(node, pos + 1),
+            (node->count - pos - 1) * sizeof(data_t));
+        key(node)[pos] = k;
+        // FIXME:subNode和count是否冲突
+        *subNode(node, pos) = leftChild->self;
+        *subNode(node, pos + 1) = rightChild->self;
+
+        // 把左右节点刷回磁盘
+        blockFlush(leftChild);
+        blockFlush(rightChild);
+
+        node->count++;
+    } else { // 若插入位置是在最后一个,则不需要移动数据,但需要维护lastOffset
+        // TODO:
+    }
 }
 
 // 字符串转换为off_t
