@@ -86,8 +86,8 @@ class BPlusTree
     // 获取node中子节点的位置
     inline off_t *subNode(Node *node, int pos)
     {
-        // 最后一个位置的子节点偏移保存在node节点中
-        if (pos == node->count) return &node->lastOffset;
+        // 最后一个位置的子节点偏移保存在lastOffset中
+        if (pos == DEGREE) return &node->lastOffset;
         return &((off_t *) (node + sizeof(Node) + DEGREE * sizeof(key_t)))[pos];
     }
 

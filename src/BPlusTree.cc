@@ -518,6 +518,8 @@ int BPlusTree::insertNonLeaf(
         // TODO:分情况插入
     } else {
         // 该节点未满,直接简单插入
+        simpleInsertNonLeaf(node, pos, k, leftChild, rightChild);
+        blockFlush(node);
     }
 }
 
@@ -528,30 +530,51 @@ void BPlusTree::simpleInsertNonLeaf(
     Node *leftChild,
     Node *rightChild)
 {
-    // 插入位置不在最后一个,则需要移动数据
-    if (pos != node->count) {
-        memmove(
-            &key(node)[pos + 1],
-            &key(node)[pos],
-            (node->count - pos) * sizeof(key_t));
-        // NOTE:最后一个偏移记录在lastOffset中
-        memmove(
-            subNode(node, pos + 2),
-            subNode(node, pos + 1),
-            (node->count - pos - 1) * sizeof(data_t));
-        key(node)[pos] = k;
-        // FIXME:subNode和count是否冲突
-        *subNode(node, pos) = leftChild->self;
-        *subNode(node, pos + 1) = rightChild->self;
+    // 插入后节点没有填满(不使用lastOffset)
+    if (DEGREE != node->count + 1) {
+        // 若在已有的最后插入,则不需要移动数据
+        if (pos != node->count) {
+            memmove(
+                &key(node)[pos + 1],
+                &key(node)[pos],
+                (node->count - pos) * sizeof(key_t));
+            memmove(
+                subNode(node, pos + 2),
+                subNode(node, pos + 1),
+                (node->count - pos) * sizeof(off_t));
+        }
 
-        // 把左右节点刷回磁盘
-        blockFlush(leftChild);
-        blockFlush(rightChild);
+    } else { // 插入后节点被填满,需要维护lastOffset
+        // 若插入点不是在最后一个位置,则lastOffset由当前最后的点确定
+        if (pos != DEGREE - 1) {
+            node->lastOffset = *subNode(node, DEGREE - 1);
 
-        node->count++;
-    } else { // 若插入位置是在最后一个,则不需要移动数据,但需要维护lastOffset
-        // TODO:
+            memmove(
+                &key(node)[pos + 1],
+                &key(node)[pos],
+                (node->count - pos) * sizeof(key_t));
+
+            // 拷贝数-1,因为最后已放在lastOffset
+            memmove(
+                subNode(node, pos + 2),
+                subNode(node, pos + 1),
+                (node->count - pos - 1) * sizeof(off_t));
+        }
+
+        // 若插入点在最后一个位置,不需要移动数据,lastOffset由插入点确定
+        // 在下方subNode(node, pos+1)更新
     }
+
+    // 对插入点更新
+    key(node)[pos] = k;
+    *subNode(node, pos) = leftChild->self;
+    *subNode(node, pos + 1) = rightChild->self;
+
+    // 把左右节点刷回磁盘
+    blockFlush(leftChild);
+    blockFlush(rightChild);
+
+    node->count++;
 }
 
 // 字符串转换为off_t
