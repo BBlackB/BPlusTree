@@ -23,9 +23,9 @@
 struct Node
 {
     off_t self; // 当前block在文件中的偏移
-    off_t parent;
-    off_t prev;
-    off_t next;
+    // off_t parent;   // 可以不用
+    off_t prev; // 叶子节点的前一个
+    off_t next; // 叶子节点的后一个
     off_t lastOffset; // 当此节点为非叶子节点时,lastOffset指向最右的子节点
 
     short type; // 叶子节点/非叶子节点
@@ -118,7 +118,7 @@ class BPlusTree
     int searchInNode(Node *node, key_t target);
 
     /***在磁盘中命名为block***/
-    // 增加新的block
+    // 为node节点分配磁盘空间
     off_t appendBlock(Node *node);
     // block写回磁盘
     int blockFlush(Node *node);
@@ -144,11 +144,29 @@ class BPlusTree
     // 更新父节点
     int updateParentNode(Node *leftChild, Node *rightChild, key_t k);
 
+    // 为非叶子节点分配磁盘空间
+    void addNonLeafNode(Node *anotherNode);
     // 在非叶子节点中插入
     int insertNonLeaf(Node *node, Node *leftChild, Node *rightChild, key_t k);
     // 简单方式插入非叶子节点
     void simpleInsertNonLeaf(
         Node *node,
+        int pos,
+        key_t k,
+        Node *leftChild,
+        Node *rightChild);
+    // 非叶子节点左分裂(关注lastOffset)
+    key_t splitLeftNonLeaf(
+        Node *node,
+        Node *leftNode,
+        int pos,
+        key_t k,
+        Node *leftChild,
+        Node *rightChild);
+    // 非叶子节点右分裂1(pos == split)
+    key_t splitRightNonLeaf1(
+        Node *node,
+        Node *rightNode,
         int pos,
         key_t k,
         Node *leftChild,
