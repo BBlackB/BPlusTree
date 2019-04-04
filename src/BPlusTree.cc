@@ -40,6 +40,8 @@ BPlusTree::BPlusTree(const char *fileName, int blockSize)
 
     // 计算树的度
     DEGREE = (blockSize_ - sizeof(Node)) / (sizeof(key_t) + sizeof(off_t));
+    assert(DEGREE > 2);
+
     printf("Degree = %d\n", DEGREE);
     printf("Block size = %ld\n", blockSize_);
     printf("Node = %ld\n", sizeof(Node));
@@ -320,11 +322,18 @@ int BPlusTree::insertLeaf(Node *leaf, key_t k, data_t value)
         Node *anotherNode = newLeaf();
         key_t splitkey;
 
-        if (pos < split) { // TODO:left split
+        if (pos < split) { // 分裂出左叶子
             splitkey = splitLeftLeaf(leaf, anotherNode, k, value, pos);
-        } else { // TODO:right split
+        } else { // 分裂出右叶子
             splitkey = splitRightLeaf(leaf, anotherNode, k, value, pos);
         }
+
+        // 递归维护上层节点
+        if (pos < split)
+            updateParentNode(anotherNode, leaf, splitkey);
+        else
+            updateParentNode(leaf, anotherNode, splitkey);
+
     } else { // block未满->不分裂
         simpleInsertLeaf(leaf, pos, k, value);
         blockFlush(leaf);
@@ -518,14 +527,26 @@ int BPlusTree::insertNonLeaf(
     // 该节点已满,需关注lastOffset
     if (node->count == DEGREE) {
         int split = DEGREE / 2;
+        key_t splitkey;
         Node *anotherNode = newNonLeaf();
-        // TODO:分情况插入
+
+        // 分情况插入
         if (pos < split) {
-            splitLeftNonLeaf(node, anotherNode, pos, k, leftChild, rightChild);
+            splitkey = splitLeftNonLeaf(
+                node, anotherNode, pos, k, leftChild, rightChild);
         } else if (pos == split) {
+            splitkey = splitRightNonLeaf1(
+                node, anotherNode, pos, k, leftChild, rightChild);
         } else {
-            /* code */
+            splitkey = splitRightNonLeaf2(
+                node, anotherNode, pos, k, leftChild, rightChild);
         }
+
+        // 递归维护上层节点
+        if (pos < split)
+            updateParentNode(anotherNode, node, splitkey);
+        else
+            updateParentNode(node, anotherNode, splitkey);
 
     } else {
         // 该节点未满,直接简单插入
@@ -675,16 +696,22 @@ key_t BPlusTree::splitRightNonLeaf1(
     // 将DEGREE - pos个key移动到右节点上
     memmove(
         &key(rightNode)[0], &key(node)[pos], rightNode->count * sizeof(key_t));
-    // FIXME: rightNode->count - 2 ?<0
+
+    // 右节点个数必大于2
+    assert(rightNode->count > 2);
+
     memmove(
         subNode(rightNode, 1),
         subNode(node, pos + 1),
         (rightNode->count - 2) * sizeof(off_t));
 
+    // 左右子节点
     *subNode(node, pos) = leftChild->self;
     *subNode(rightNode, 0) = rightChild->self;
 
+    // 右节点不满,则不用lastOffset
     *subNode(rightNode, rightNode->count) = node->lastOffset;
+    // FIXME:维护traceNode
 
     // 将左右子节点刷回磁盘
     blockFlush(leftChild);
@@ -692,6 +719,61 @@ key_t BPlusTree::splitRightNonLeaf1(
 
     // 返回插入节点的key,用于增加到上层节点中
     return k;
+}
+
+// 非叶子节点右分裂(pos > split)
+key_t BPlusTree::splitRightNonLeaf2(
+    Node *node,
+    Node *rightNode,
+    int pos,
+    key_t k,
+    Node *leftChild,
+    Node *rightChild)
+{
+    int split = DEGREE / 2;         // 分裂节点在左节点的位置
+    int rightPos = pos - split - 1; // 插入节点在右节点的位置
+
+    // 为新节点分配磁盘空间
+    appendBlock(rightNode);
+
+    node->count = split;
+    rightNode->count = DEGREE - split;
+
+    // (rightPos) + (DEGREE - pos) + 1 == rightNode->count
+    if (rightPos != 0) {
+        memmove(
+            &key(rightNode)[0],
+            &key(node)[split + 1],
+            (rightPos) * sizeof(key_t));
+        memmove(
+            subNode(rightNode, 0),
+            subNode(node, split + 1),
+            (rightPos) * sizeof(off_t));
+    }
+
+    memmove(
+        &key(rightNode)[rightPos + 1],
+        &key(node)[pos],
+        (DEGREE - pos) * sizeof(key_t));
+    if (pos < DEGREE - 1)
+        memmove(
+            subNode(rightNode, rightPos + 2),
+            subNode(node, pos + 1),
+            (DEGREE - pos - 1) * sizeof(off_t));
+    *subNode(rightNode, rightNode->count) = node->lastOffset;
+
+    // 处理新插入节点的key和subNode
+    key(rightNode)[rightPos] = k;
+    *subNode(rightNode, rightPos) = leftChild->self;
+    *subNode(rightNode, rightPos + 1) = rightChild->self;
+
+    // FIXME:维护traceNode
+
+    // 将左右子节点刷回磁盘
+    blockFlush(leftChild);
+    blockFlush(rightChild);
+
+    return key(node)[split];
 }
 
 // 字符串转换为off_t

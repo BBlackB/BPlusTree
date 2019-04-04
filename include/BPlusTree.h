@@ -52,12 +52,12 @@ class BPlusTree
     off_t fileSize_;              // 指向文件末尾,便于创建新的block
     std::list<off_t> freeBlocks_; // 记录空闲块
     std::list<off_t> traceNode_; // 记录经过的父节点(Node结构可省去父指针)
-    const char *fileName_;     // 索引文件
-    int fd_;                   // 索引文件的描述符
-    int DEGREE;                // 一个block中的最大节点数
-    char cmdBuf_[64];          // 保存命令字符串
-    Node *rootCache_;          // root节点缓存
-    Node *caches_;             // 块缓存
+    const char *fileName_; // 索引文件
+    int fd_;               // 索引文件的描述符
+    int DEGREE;            // 一个block中的最大节点数 NOTE: DEGREE >= 3
+    char cmdBuf_[64];      // 保存命令字符串
+    Node *rootCache_;      // root节点缓存
+    Node *caches_;         // 块缓存
     bool used_[MAX_CACHE_NUM]; // 标记使用的缓存
 
   public:
@@ -165,6 +165,14 @@ class BPlusTree
         Node *rightChild);
     // 非叶子节点右分裂1(pos == split)
     key_t splitRightNonLeaf1(
+        Node *node,
+        Node *rightNode,
+        int pos,
+        key_t k,
+        Node *leftChild,
+        Node *rightChild);
+    // 非叶子节点右分裂(pos > split)
+    key_t splitRightNonLeaf2(
         Node *node,
         Node *rightNode,
         int pos,
