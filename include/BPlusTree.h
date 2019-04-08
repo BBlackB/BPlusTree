@@ -57,8 +57,8 @@ class BPlusTree
     int DEGREE;            // 一个block中的最大节点数 NOTE: DEGREE >= 3
     char cmdBuf_[64];      // 保存命令字符串
     Node *rootCache_;      // root节点缓存
-    Node *caches_;         // 块缓存
-    bool used_[MAX_CACHE_NUM]; // 标记使用的缓存
+    Node *caches_[MAX_CACHE_NUM]; // 块缓存
+    bool used_[MAX_CACHE_NUM];    // 标记使用的缓存
 
   public:
     BPlusTree(const char *fileName, int blockSize);
@@ -73,22 +73,26 @@ class BPlusTree
     // 增加数据
     int insert(key_t key, data_t value);
     // 显示树中所有节点
-    int dump();
+    void dump();
 
   private:
+    // NOTE:指针运算必须转换为char *
     // 获取node中key的位置
-    inline key_t *key(Node *node) { return (key_t *) (node + sizeof(Node)); }
-    // 获取node中data的位置
-    inline data_t *data(Node *node)
+    inline key_t *key(const Node *node)
     {
-        return (data_t *) (node + sizeof(Node)) + DEGREE * sizeof(key_t);
+        return (key_t *) ((char *) node + sizeof(Node));
+    }
+    // 获取node中data的位置
+    inline data_t *data(const Node *node)
+    {
+        return (data_t *) ((char *) key(node) + DEGREE * sizeof(key_t));
     }
     // 获取node中子节点的位置
-    inline off_t *subNode(Node *node, int pos)
+    inline off_t *subNode(Node *node, const int pos)
     {
         // 最后一个位置的子节点偏移保存在lastOffset中
         if (pos == DEGREE) return &node->lastOffset;
-        return &((off_t *) (node + sizeof(Node) + DEGREE * sizeof(key_t)))[pos];
+        return &((off_t *) ((char *) key(node) + DEGREE * sizeof(key_t)))[pos];
     }
 
     // 判断是否为叶子节点
@@ -108,6 +112,10 @@ class BPlusTree
     void cacheDefer(const Node *node);
 
     /***在内存中命名为node***/
+    // 在rootCache中创建新的root
+    // FIXME:暂未使用newRoot
+    // 使用思路:在locateNode和blockFlush中判断,but,traceNode_?
+    Node *newRoot();
     // 在cache中创建新的节点
     Node *newNode();
     // 在cache中创建新的非叶子节点
@@ -185,6 +193,9 @@ class BPlusTree
     off_t pchar_2_off_t(const char *str, size_t size);
     // off_t转换为字符串
     void off_t_2_pchar(off_t offset, char *buf, int len);
+
+    // 输出当前节点
+    void draw(Node *node, int level);
 };
 
 #endif // __BPLUSTREE_H__

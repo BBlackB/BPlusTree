@@ -11,6 +11,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <errno.h>
 #include "BPlusTree.h"
 
 BPlusTree::BPlusTree(const char *fileName, int blockSize)
@@ -18,6 +19,7 @@ BPlusTree::BPlusTree(const char *fileName, int blockSize)
 {
     char bootFile[32];
     off_t freeBlock;
+    sprintf(bootFile, "%s.boot", fileName);
     int fd = open(bootFile, O_RDONLY, 0644);
 
     // 读取配置
@@ -46,13 +48,22 @@ BPlusTree::BPlusTree(const char *fileName, int blockSize)
     printf("Block size = %ld\n", blockSize_);
     printf("Node = %ld\n", sizeof(Node));
 
-    // 打开索引文件
-    fd_ = open(fileName, O_CREAT | O_DIRECT | O_RDWR, 0644);
+    /**
+     * 使用O_DIRECT需要遵守的一些限制：
+     * 用于传递数据的缓冲区，其内存边界必须对齐为块大小的整数倍
+     * 数据传输的开始点，即文件和设备的偏移量，必须是块大小的整数倍
+     * 待传递数据的长度必须是块大小的整数倍。
+     * 不遵守上述任一限制均将导致EINVAL错误。
+     */
+    // 打开索引文件 FIXME:暂未打开O_DIRECT
+    fd_ = open(fileName, O_CREAT | O_RDWR, 0644);
     assert(fd_ >= 0);
 
     // chche分配空间
     rootCache_ = (Node *) malloc(blockSize_);
-    caches_ = (Node *) malloc(MAX_CACHE_NUM * blockSize_);
+    for (int i = 0; i < MAX_CACHE_NUM; i++) {
+        caches_[i] = (Node *) malloc(blockSize_);
+    }
 
     // 若存在root,则读到缓存
     if (root_ != INVALID_OFFSET) {
@@ -77,7 +88,8 @@ BPlusTree::~BPlusTree()
         assert(offsetStore(fd, (*it)) == S_OK);
     }
 
-    free(caches_);
+    for (int i = 0; i < MAX_CACHE_NUM; ++i)
+        free(caches_[i]);
 
     // 关闭文件
     close(fd);
@@ -98,6 +110,9 @@ void BPlusTree::commandHander()
             break;
         case 'q':
             return;
+        case 'd':
+            dump();
+            break;
 
         default:
             break;
@@ -116,14 +131,16 @@ void BPlusTree::help()
 
 int BPlusTree::insert(key_t k, data_t value)
 {
-    Node *node = rootCache_;
+    // FIXME:如何使用root_
+    // Node *node = rootCache_;
+    Node *node = locateNode(root_);
 
     // 清空traceNode_
     traceNode_.clear();
 
     while (node != NULL) {
         if (isLeaf(node)) {
-            insertLeaf(node, k, value);
+            return insertLeaf(node, k, value);
 
         } else {
             // 记录父节点偏移
@@ -143,9 +160,62 @@ int BPlusTree::insert(key_t k, data_t value)
     data(root)[0] = value;
     root->count = 1;
     root_ = appendBlock(root);
+
     blockFlush(root);
 
     return S_OK;
+}
+
+void BPlusTree::draw(Node *node, int level)
+{
+    if (level != 0) {
+        for (int i = 0; i < level - 1; i++)
+            printf("%-8s", " ");
+        printf("%-8s", "+-------");
+    }
+
+    //
+    if (isLeaf(node))
+        printf("leaf:");
+    else
+        printf("node:");
+
+    for (int i = 0; i < node->count; i++)
+        printf(" %ld", key(node)[i]);
+    printf("\n");
+}
+
+// 显示树中所有节点 前序遍历
+void BPlusTree::dump()
+{
+    struct NodeInfo
+    {
+        off_t offset;
+        int level;
+    };
+
+    if (root_ == INVALID_OFFSET) return;
+    // stack
+    std::list<NodeInfo> preOrderStack;
+
+    preOrderStack.push_back(NodeInfo{root_, 0});
+
+    while (!preOrderStack.empty()) {
+        NodeInfo nodeinfo = preOrderStack.back();
+        preOrderStack.pop_back();
+
+        Node *node = locateNode(nodeinfo.offset);
+
+        draw(node, nodeinfo.level);
+
+        if (!isLeaf(node)) {
+            // 把所有子节点按倒序压栈
+            for (int i = node->count; i >= 0; i--) {
+                preOrderStack.push_back(
+                    NodeInfo{*subNode(node, i), nodeinfo.level + 1});
+            }
+        }
+    }
 }
 
 off_t BPlusTree::offsetLoad(int fd)
@@ -162,12 +232,31 @@ int BPlusTree::offsetStore(int fd, off_t offset)
     return write(fd, buf, sizeof buf) == ADDR_OFFSET_LENTH ? S_OK : S_FALSE;
 }
 
+// key_t == long
 int BPlusTree::insertHandler()
 {
     char *s = strstr(cmdBuf_, " ");
-    int n = atoi(++s);
-    // printf("insert %d.\n", n);
-    return insert(n, n);
+    if (s == NULL) goto faild;
+
+    s++;
+    if (*s >= '0' && *s <= '9') {
+        char *s2 = strstr(s, "-");
+        // 插入区间
+        if (s2 != NULL) {
+            long n1, n2;
+            sscanf(s, "%ld-%ld", &n1, &n2);
+            for (; n1 <= n2; n1++)
+                insert(n1, n1);
+            return S_OK;
+        } else { // 插入一个数
+            int n = atoi(s);
+            return insert(n, n);
+        }
+    }
+
+faild:
+    printf("Invalid argument.\n");
+    return S_FALSE;
 }
 
 Node *BPlusTree::cacheRefer()
@@ -176,7 +265,7 @@ Node *BPlusTree::cacheRefer()
     for (int i = 0; i < MAX_CACHE_NUM; ++i) {
         if (!used_[i]) {
             used_[i] = true;
-            return &caches_[i];
+            return caches_[i];
         }
     }
     assert(0);
@@ -186,12 +275,22 @@ void BPlusTree::cacheDefer(const Node *node)
 {
     // 找到对应的缓存并释放
     for (int i = 0; i < MAX_CACHE_NUM; ++i) {
-        if (node == &caches_[i]) {
+        if (node == caches_[i]) {
             used_[i] = false;
             return;
         }
     }
     assert(0);
+}
+
+Node *BPlusTree::newRoot()
+{
+    rootCache_->self = INVALID_OFFSET;
+    rootCache_->prev = INVALID_OFFSET;
+    rootCache_->next = INVALID_OFFSET;
+    rootCache_->lastOffset = INVALID_OFFSET;
+
+    return rootCache_;
 }
 
 Node *BPlusTree::newNode()
@@ -201,6 +300,7 @@ Node *BPlusTree::newNode()
     // node->parent = INVALID_OFFSET;
     node->prev = INVALID_OFFSET;
     node->next = INVALID_OFFSET;
+    node->lastOffset = INVALID_OFFSET;
 
     node->count = 0;
     return node;
@@ -264,9 +364,9 @@ Node *BPlusTree::locateNode(off_t offset)
     // REVIEW:why?
     for (int i = 0; i < MAX_CACHE_NUM; i++) {
         if (!used_[i]) {
-            int len = pread(fd_, &caches_[i], blockSize_, offset);
+            int len = pread(fd_, caches_[i], blockSize_, offset);
             assert(len == blockSize_);
-            return &caches_[i];
+            return caches_[i];
         }
     }
     assert(0);
@@ -312,8 +412,10 @@ int BPlusTree::insertLeaf(Node *leaf, key_t k, data_t value)
     // 恢复正确的节点位置
     pos = -pos - 1;
 
-    int ui = (leaf - caches_) / blockSize_;
-    used_[ui] = true;
+    int i = 0;
+    while (leaf != caches_[i++])
+        ;
+    used_[--i] = true;
 
     // block已满->分裂
     if (leaf->count == DEGREE) {
@@ -506,8 +608,10 @@ int BPlusTree::updateParentNode(Node *leftChild, Node *rightChild, key_t k)
         traceNode_.pop_back();
 
         // 在非叶子节点中插入key
-        insertNonLeaf(fetchBlock(p), leftChild, rightChild, k);
+        return insertNonLeaf(fetchBlock(p), leftChild, rightChild, k);
     }
+
+    return S_OK;
 }
 
 void BPlusTree::addNonLeafNode(Node *anotherNode) { appendBlock(anotherNode); }
@@ -553,6 +657,8 @@ int BPlusTree::insertNonLeaf(
         simpleInsertNonLeaf(node, pos, k, leftChild, rightChild);
         blockFlush(node);
     }
+
+    return S_OK;
 }
 
 void BPlusTree::simpleInsertNonLeaf(
@@ -597,7 +703,6 @@ void BPlusTree::simpleInsertNonLeaf(
         // 在下方subNode(node, pos+1)更新
     }
 
-    // FIXME:此处无需维护parent,但是否需要维护traceNode
     // 对插入点更新
     key(node)[pos] = k;
     *subNode(node, pos) = leftChild->self;
@@ -646,7 +751,6 @@ key_t BPlusTree::splitLeftNonLeaf(
 
     key(leftNode)[pos] = k;
 
-    // FIXME:维护traceNode
     if (pos == split - 1) {
         *subNode(leftNode, pos) = leftChild->self;
         *subNode(node, 0) = rightChild->self;
@@ -687,7 +791,6 @@ key_t BPlusTree::splitRightNonLeaf1(
     Node *leftChild,
     Node *rightChild)
 {
-    // REVIEW:
     addNonLeafNode(rightNode);
 
     node->count = pos;
@@ -711,7 +814,6 @@ key_t BPlusTree::splitRightNonLeaf1(
 
     // 右节点不满,则不用lastOffset
     *subNode(rightNode, rightNode->count) = node->lastOffset;
-    // FIXME:维护traceNode
 
     // 将左右子节点刷回磁盘
     blockFlush(leftChild);
@@ -766,8 +868,6 @@ key_t BPlusTree::splitRightNonLeaf2(
     key(rightNode)[rightPos] = k;
     *subNode(rightNode, rightPos) = leftChild->self;
     *subNode(rightNode, rightPos + 1) = rightChild->self;
-
-    // FIXME:维护traceNode
 
     // 将左右子节点刷回磁盘
     blockFlush(leftChild);

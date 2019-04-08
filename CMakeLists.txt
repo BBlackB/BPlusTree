@@ -34,6 +34,15 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${PROJECT_BINARY_DIR}/bin")
 
 
 # 编译模式，Release/Debug，-DCMAKE_BUILD_TYPE=Release|Debug
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug) # Debug Release
+endif()
+string(TOLOWER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE)
+if (CMAKE_BUILD_TYPE MATCHES "debug")
+    set(CMAKE_BUILD_TYPE Debug)
+else()
+    set(CMAKE_BUILD_TYPE Release)
+endif()
 message(STATUS "Building mode: ${CMAKE_BUILD_TYPE}")
 
 # 设置编译参数
