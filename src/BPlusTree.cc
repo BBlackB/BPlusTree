@@ -113,6 +113,9 @@ void BPlusTree::commandHander()
         case 'd':
             dump();
             break;
+        case 's':
+            searchHandler();
+            break;
 
         default:
             break;
@@ -148,7 +151,7 @@ int BPlusTree::insert(key_t k, data_t value)
 
             int pos = searchInNode(node, k);
             if (pos >= 0)
-                node = locateNode(*subNode(node, pos));
+                node = locateNode(*subNode(node, pos + 1));
             else // 没有找到,则读取在此范围的block
                 node = locateNode(*subNode(node, -pos - 1));
         }
@@ -164,6 +167,27 @@ int BPlusTree::insert(key_t k, data_t value)
     blockFlush(root);
 
     return S_OK;
+}
+
+// data_t == long
+long BPlusTree::search(key_t k)
+{
+    long ret = -1;
+    Node *node = locateNode(root_);
+
+    while (NULL != node) {
+        int pos = searchInNode(node, k);
+        if (isLeaf(node)) {
+            ret = pos >= 0 ? data(node)[pos] : -1;
+            break;
+        } else {
+            if (pos >= 0)
+                node = locateNode(*subNode(node, pos + 1));
+            else
+                node = locateNode(*subNode(node, -pos - 1));
+        }
+    }
+    return ret;
 }
 
 void BPlusTree::draw(Node *node, int level)
@@ -243,15 +267,46 @@ int BPlusTree::insertHandler()
         char *s2 = strstr(s, "-");
         // 插入区间
         if (s2 != NULL) {
-            long n1, n2;
+            key_t n1, n2;
             sscanf(s, "%ld-%ld", &n1, &n2);
             for (; n1 <= n2; n1++)
                 insert(n1, n1);
             return S_OK;
         } else { // 插入一个数
-            int n = atoi(s);
+            key_t n = atoi(s);
             return insert(n, n);
         }
+    }
+
+faild:
+    printf("Invalid argument.\n");
+    return S_FALSE;
+}
+
+// key_t == long && data_t == long
+int BPlusTree::searchHandler()
+{
+    char *s = strstr(cmdBuf_, " ");
+    if (NULL == s) goto faild;
+
+    s++;
+
+    if (*s >= '0' && *s <= '9') {
+        char *s2 = strstr(s, "-");
+        // 查找区间
+        if (s2 != NULL) {
+            key_t n1, n2;
+            sscanf(s, "%ld-%ld", &n1, &n2);
+            for (; n1 <= n2; n1++)
+                printf("key: %ld, index: %ld\n", n1, search(n1));
+            return S_OK;
+        } else { // 查找一个数
+            key_t n = atoi(s);
+            printf("key: %ld, index: %ld\n", n, search(n));
+            return S_OK;
+        }
+
+        return S_OK;
     }
 
 faild:
@@ -392,9 +447,14 @@ int BPlusTree::searchInNode(Node *node, key_t target)
             high = mid - 1;
     }
 
+    // high = -1
+    if (high < 0) return high;
+
     // 返回第一个大于target的坐标的相反数减1(避免0的双意性)
     if (keys[high] > target)
         return -high - 1;
+    else if (keys[high] == target) // 找到则返回
+        return high;
     else
         return -high - 2;
 }

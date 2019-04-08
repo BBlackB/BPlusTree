@@ -72,6 +72,8 @@ class BPlusTree
     void help();
     // 增加数据
     int insert(key_t key, data_t value);
+    // 查找
+    long search(key_t k);
     // 显示树中所有节点
     void dump();
 
@@ -103,8 +105,11 @@ class BPlusTree
     off_t offsetLoad(int fd);
     // 存一个偏移量
     int offsetStore(int fd, off_t offset);
+
     // 数据插入之前的预处理
     int insertHandler();
+    // 查找数据的预处理
+    int searchHandler();
 
     // 占用一个缓存
     Node *cacheRefer();
