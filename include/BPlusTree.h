@@ -45,6 +45,11 @@ class BPlusTree
         BPLUS_TREE_LEAF = 0,
         BPLUS_TREE_NON_LEAF = 1
     };
+    enum
+    {
+        LEFT_NODE = 0,
+        RIGHT_NODE = 1
+    };
 
   private:
     off_t root_;                  // 记录root的偏移量
@@ -74,6 +79,8 @@ class BPlusTree
     int insert(key_t key, data_t value);
     // 查找
     long search(key_t k);
+    // 删除
+    int remove(key_t);
     // 显示树中所有节点
     void dump();
 
@@ -110,6 +117,8 @@ class BPlusTree
     int insertHandler();
     // 查找数据的预处理
     int searchHandler();
+    // 删除之前的数据预处理
+    int removeHandler();
 
     // 占用一个缓存
     Node *cacheRefer();
@@ -133,6 +142,8 @@ class BPlusTree
     /***在磁盘中命名为block***/
     // 为node节点分配磁盘空间
     off_t appendBlock(Node *node);
+    // 回收磁盘空间
+    void unappendBlock(Node *node);
     // block写回磁盘
     int blockFlush(Node *node);
     // 把block取到cache中(不可覆盖)
@@ -140,6 +151,7 @@ class BPlusTree
     // 把block读到cache中(可覆盖)
     Node *locateNode(off_t offset);
 
+    /*** Insert ***/
     // 插入叶子节点
     int insertLeaf(Node *node, key_t key, data_t value);
     // 简单方式插入叶子节点(不分裂)
@@ -193,6 +205,62 @@ class BPlusTree
         Node *leftChild,
         Node *rightChild);
 
+    /*** Remove ***/
+    // 删除节点,回收block
+    void removeNode(Node *node, Node *left, Node *right);
+    // 删除叶子节点(与其他叶子节点合并)
+    int removeLeaf(Node *node, key_t k);
+    // 简单删除叶子节点
+    void simpleRemoveInLeaf(Node *node, int pos);
+    // 选择使用左节点还是右节点来借数据
+    int selectNode(Node *node, Node *left, Node *right, int pos);
+    // 从left转移一位数据到node
+    void
+    shiftLeafFromLeft(Node *node, Node *left, Node *parent, int ppos, int pos);
+    // node合并到left
+    void mergeLeafIntoLeft(Node *node, Node *left, int pos);
+    // 从right转移一位到node
+    void shiftLeafFromRight(
+        Node *node,
+        Node *right,
+        Node *parent,
+        int ppos,
+        int pos);
+    // right合并到node
+    void mergeLeafWithRight(Node *node, Node *right);
+    // 删除非叶子节点的key
+    void removeInNonLeaf(Node *node, int pos);
+    // 简单删除非叶子节点
+    void simpleRemoveInNonLeaf(Node *node, int pos);
+    // 非叶子节 向左移动一位 left->parent parent->node
+    void shiftNonLeafFromLeft(
+        Node *node,
+        Node *left,
+        Node *parent,
+        int ppos,
+        int pos);
+    // node合并到left parent->left node->left
+    void mergeNonLeafIntoLeft(
+        Node *node,
+        Node *left,
+        Node *parent,
+        int ppos,
+        int pos);
+    // 非叶子节点 向左移动一位 parent->node right->parent
+    void shiftNonLeafFromRight(
+        Node *node,
+        Node *right,
+        Node *parent,
+        int ppos,
+        int pos);
+    // right合并到node parent->node right->node
+    void mergeNonLeafWithRight(
+        Node *node,
+        Node *right,
+        Node *parent,
+        int ppos,
+        int pos);
+
   private:
     // 字符串转换为off_t
     off_t pchar_2_off_t(const char *str, size_t size);
@@ -201,6 +269,9 @@ class BPlusTree
 
     // 输出当前节点
     void draw(Node *node, int level);
+
+    // 打印所有叶子节点.  测试用
+    void showLeaves();
 };
 
 #endif // __BPLUSTREE_H__

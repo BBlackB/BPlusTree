@@ -116,6 +116,12 @@ void BPlusTree::commandHander()
         case 's':
             searchHandler();
             break;
+        case 'r':
+            removeHandler();
+            break;
+        case 't':
+            showLeaves();
+            break;
 
         default:
             break;
@@ -188,6 +194,32 @@ long BPlusTree::search(key_t k)
         }
     }
     return ret;
+}
+
+int BPlusTree::remove(key_t k)
+{
+    Node *node = locateNode(root_);
+
+    // 清空traceNode_
+    traceNode_.clear();
+
+    while (node != NULL) {
+        if (isLeaf(node)) {
+            return removeLeaf(node, k);
+        } else {
+            // 记录经过的节点
+            traceNode_.push_back(node->self);
+
+            int pos = searchInNode(node, k);
+            if (pos >= 0)
+                node = locateNode(*subNode(node, pos + 1));
+            else
+                node = locateNode(*subNode(node, -pos - 1));
+        }
+    }
+
+    // 没找到,则返回-1
+    return -1;
 }
 
 void BPlusTree::draw(Node *node, int level)
@@ -314,6 +346,32 @@ faild:
     return S_FALSE;
 }
 
+int BPlusTree::removeHandler()
+{
+    char *s = strstr(cmdBuf_, " ");
+    if (s == NULL) goto faild;
+
+    s++;
+    if (*s >= '0' && *s <= '9') {
+        char *s2 = strstr(s, "-");
+        // 删除区间
+        if (s2 != NULL) {
+            key_t n1, n2;
+            sscanf(s, "%ld-%ld", &n1, &n2);
+            for (; n1 <= n2; n1++)
+                remove(n1);
+            return S_OK;
+        } else { // 删除一个数
+            key_t n = atoi(s);
+            return remove(n);
+        }
+    }
+
+faild:
+    printf("Invalid argument.\n");
+    return S_FALSE;
+}
+
 Node *BPlusTree::cacheRefer()
 {
     // 找到一块空闲的缓存使用
@@ -389,11 +447,21 @@ off_t BPlusTree::appendBlock(Node *node)
     return node->self;
 }
 
+void BPlusTree::unappendBlock(Node *node)
+{
+    // 若回收最后一个block,则直接减少fileSize_
+    if (fileSize_ - blockSize_ == node->self)
+        fileSize_ -= blockSize_;
+    else // 否则使用链表回收
+        freeBlocks_.push_back(node->self);
+}
+
 int BPlusTree::blockFlush(Node *node)
 {
     if (node == NULL) return S_FALSE;
 
     int ret = pwrite(fd_, node, blockSize_, node->self);
+    if (ret == -1) { printf("strerror: %s\n", strerror(errno)); }
     assert(ret == blockSize_);
     cacheDefer(node);
 
@@ -447,7 +515,7 @@ int BPlusTree::searchInNode(Node *node, key_t target)
             high = mid - 1;
     }
 
-    // high = -1
+    // high == -1
     if (high < 0) return high;
 
     // 返回第一个大于target的坐标的相反数减1(避免0的双意性)
@@ -936,6 +1004,459 @@ key_t BPlusTree::splitRightNonLeaf2(
     return key(node)[split];
 }
 
+void BPlusTree::removeNode(Node *node, Node *left, Node *right)
+{
+    // 处理叶子节点的前后关系
+    if (isLeaf(node)) {
+        if (left != NULL) {
+            if (right != NULL) {
+                left->next = right->self;
+                right->prev = left->self;
+
+                blockFlush(right);
+            } else
+                left->next = INVALID_OFFSET;
+            blockFlush(left);
+        } else {
+            if (right != NULL) {
+                right->prev = INVALID_OFFSET;
+                blockFlush(right);
+            }
+        }
+    }
+
+    assert(node->self != INVALID_OFFSET);
+
+    // 回收block
+    unappendBlock(node);
+    cacheDefer(node);
+}
+
+int BPlusTree::removeLeaf(Node *node, key_t k)
+{
+    // FIXME:some bugs
+    int pos = searchInNode(node, k);
+
+    // 不存在
+    if (pos < 0) return S_FALSE;
+
+    {
+        int i = 0;
+        while (caches_[i++] != node)
+            ;
+        used_[--i] = true;
+    }
+
+    // 没有父节点,即当前节点为root
+    if (traceNode_.empty()) {
+        // 只有一个成员,清空树
+        if (node->count == 1) {
+            // 删除成员必为剩余节点,只需标记root_,无需写回
+            assert(k == key(node)[0]);
+            root_ = INVALID_OFFSET;
+            removeNode(node, NULL, NULL);
+        } else { // 删除一个成员
+            simpleRemoveInLeaf(node, pos);
+            blockFlush(node);
+        }
+    } // node会与其他节点合并或借数据
+    else if (node->count <= (DEGREE + 1) / 2) {
+        // 分情况讨论删除
+
+        // 取出该节点的左右节点和父节点
+        Node *parent = fetchBlock(traceNode_.back());
+        Node *left = fetchBlock(node->prev);
+        Node *right = fetchBlock(node->next);
+
+        //  父节点出栈
+        traceNode_.pop_back();
+
+        // ppos为node在parent的位置
+        int ppos = searchInNode(parent, k);
+        if (ppos < 0) ppos = -ppos - 2;
+
+        // 根据左右节点情况来选择
+        if (selectNode(node, left, right, ppos) == LEFT_NODE) {
+            // 若left右足够多的数据,则分一个给node
+            if (left->count > (DEGREE + 1) / 2) {
+                // 从left转移一位数据到node
+                shiftLeafFromLeft(node, left, parent, ppos, pos);
+
+                // 把更改刷回磁盘
+                blockFlush(parent);
+                blockFlush(node);
+                blockFlush(left);
+                blockFlush(right);
+            } else {
+                // node合并到left
+                mergeLeafIntoLeft(node, left, pos);
+                // 删除node节点
+                removeNode(node, left, right);
+                // 删除父节点的key,并向上更新
+                removeInNonLeaf(parent, ppos);
+            }
+        } else // 选择right节点 NOTE:ppos 有可能为-1
+        {
+            // 先删除node节点中的k
+            simpleRemoveInLeaf(node, pos);
+
+            // 若right节点有足够多的数据,分一个给node
+            if (right->count > (DEGREE + 1) / 2) {
+                shiftLeafFromRight(node, right, parent, ppos + 1, pos);
+
+                // 把更改刷回磁盘
+                blockFlush(parent);
+                blockFlush(node);
+                blockFlush(left);
+                blockFlush(right);
+            } else { // right合并到node
+                mergeLeafWithRight(node, right);
+                // 删除right节点
+                removeNode(right, node, fetchBlock(right->next));
+                blockFlush(left);
+                // 删除parent的key,并向上更新
+                removeInNonLeaf(parent, ppos + 1);
+            }
+        }
+
+    } else {
+        // 简单删除一个成员
+        simpleRemoveInLeaf(node, pos);
+        blockFlush(node);
+    }
+    return S_OK;
+}
+
+void BPlusTree::simpleRemoveInLeaf(Node *node, int pos)
+{
+    // 节点数减1
+    node->count--;
+    // 若不是最后一位,则需挪动数据
+    if (node->count > pos) {
+        memmove(
+            &key(node)[pos],
+            &key(node)[pos + 1],
+            (node->count - pos) * sizeof(key_t));
+        memmove(
+            &data(node)[pos],
+            &data(node)[pos + 1],
+            (node->count - pos) * sizeof(data_t));
+    }
+}
+
+int BPlusTree::selectNode(Node *node, Node *left, Node *right, int pos)
+{
+    // 若该节点是第一个子节点,则返回右节点
+    if (pos == -1)
+        return RIGHT_NODE;
+    else if (pos == node->count - 1) // 若该节点是最后一个子节点,则返回左节点
+        return LEFT_NODE;
+    else {
+        // 若该节点是中间节点,则返回拥有更多子节点的node
+        return left->count >= right->count ? LEFT_NODE : RIGHT_NODE;
+    }
+}
+
+// 从left移动最后一位到node
+void BPlusTree::shiftLeafFromLeft(
+    Node *node,
+    Node *left,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    if (pos != 0) {
+        memmove(&key(node)[1], &key(node)[0], pos * sizeof(key_t));
+        memmove(&data(node)[1], &data(node)[0], pos * sizeof(data_t));
+    }
+
+    key(node)[0] = key(left)[left->count - 1];
+    data(node)[0] = data(left)[left->count - 1];
+    left->count--;
+
+    // 更新父节点
+    key(parent)[ppos] = key(node)[0];
+}
+
+// node合并到left
+void BPlusTree::mergeLeafIntoLeft(Node *node, Node *left, int pos)
+{
+    memmove(&key(left)[left->count], &key(node)[0], pos * sizeof(key_t));
+    memmove(&data(left)[left->count], &data(node)[0], pos * sizeof(data_t));
+
+    left->count += pos;
+    // 剩余从node到left的个数
+    int rest = node->count - pos - 1;
+
+    memmove(&key(left)[left->count], &key(node)[pos + 1], rest * sizeof(key_t));
+    memmove(
+        &data(left)[left->count], &data(node)[pos + 1], rest * sizeof(data_t));
+
+    left->count += rest;
+}
+
+// 从right转移一位到node
+void BPlusTree::shiftLeafFromRight(
+    Node *node,
+    Node *right,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    key(node)[node->count] = key(right)[0];
+    data(node)[node->count] = data(right)[0];
+    node->count++;
+
+    right->count--;
+    memmove(&key(right)[0], &key(right)[1], right->count * sizeof(key_t));
+    memmove(&data(right)[0], &data(right)[1], right->count * sizeof(data_t));
+
+    // 更新parent
+    key(parent)[ppos] = key(right)[0];
+    if (pos == 0 && ppos > 0) {
+        assert(key(parent)[ppos - 1] < key(node)[0]);
+        key(parent)[ppos - 1] = key(node)[0];
+    }
+}
+
+// right合并到node
+void BPlusTree::mergeLeafWithRight(Node *node, Node *right)
+{
+    memmove(
+        &key(node)[node->count], &key(right)[0], right->count * sizeof(key_t));
+    memmove(
+        &data(node)[node->count],
+        &data(right)[0],
+        right->count * sizeof(data_t));
+
+    node->count += right->count;
+}
+
+// 删除非叶子节点
+void BPlusTree::removeInNonLeaf(Node *node, int pos)
+{
+    // node为root节点
+    if (traceNode_.empty()) {
+        // 若node只有一个key
+        if (node->count == 1) {
+            assert(pos == 0);
+            root_ = *subNode(node, 0);
+            removeNode(node, NULL, NULL);
+        } else { // 删除一个key
+            simpleRemoveInNonLeaf(node, pos);
+            blockFlush(node);
+        } // NOTE:这里是<,不是<=;
+        // 非叶子节点中的key可以比叶子节点中的key还少一个,以下同理
+    } else if (node->count < (DEGREE + 1) / 2) {
+        // 记录node的父节点和左右节点
+        Node *parent = fetchBlock(traceNode_.back());
+        Node *left, *right;
+        traceNode_.pop_back();
+
+        // NOTE:ppos可能为-1
+        int ppos = searchInNode(parent, key(node)[pos]);
+        if (ppos >= 0) {
+            left = fetchBlock(*subNode(parent, ppos));
+            right = fetchBlock(*subNode(parent, ppos + 2));
+        } else {
+            // node在parent中的key
+            int tppos = -ppos - 1;
+            if (tppos <= 0) {
+                left = NULL;
+                right = fetchBlock(*subNode(parent, tppos + 1));
+            } else if (tppos >= parent->count) {
+                right = NULL;
+                left = fetchBlock(*subNode(parent, tppos - 1));
+
+            } else {
+                left = fetchBlock(*subNode(parent, tppos - 1));
+                right = fetchBlock(*subNode(parent, tppos + 1));
+            }
+        }
+
+        // 选择左右节点
+        if (selectNode(node, left, right, ppos) == LEFT_NODE) {
+            // left有足够多的数据,则分一个给node
+            if (left->count >= (DEGREE + 1) / 2) {
+                // 非叶子节点向左转移一位
+                shiftNonLeafFromLeft(node, left, parent, ppos, pos);
+
+                // 把修改刷回磁盘
+                blockFlush(parent);
+                blockFlush(node);
+                blockFlush(left);
+                blockFlush(right);
+            } else { // left中的key不够
+                // node合并到left
+                mergeNonLeafIntoLeft(node, left, parent, ppos, pos);
+
+                // 删除node节点
+                removeNode(node, NULL, NULL);
+                // 把左右节点刷回磁盘
+                blockFlush(left);
+                blockFlush(right);
+
+                // 向上更新父节点
+                removeInNonLeaf(parent, ppos);
+            }
+        } else { // 选择right节点
+            // 先删除node节点中的k
+            simpleRemoveInNonLeaf(node, pos);
+
+            // 若right节点右足够多的数据,向左移动一位
+            if (right->count >= (DEGREE + 1) / 2) {
+                shiftNonLeafFromRight(node, right, parent, ppos + 1, pos);
+
+                // 把修改刷回磁盘
+                blockFlush(parent);
+                blockFlush(node);
+                blockFlush(left);
+                blockFlush(right);
+            } else { // right中的key不够
+                // right合并到right
+                mergeNonLeafWithRight(node, right, parent, ppos + 1, pos);
+
+                // 删除right节点
+                removeNode(right, NULL, NULL);
+                // 把左右节点刷回磁盘
+                blockFlush(node);
+                blockFlush(left);
+
+                // 向上更新父节点
+                removeInNonLeaf(parent, ppos + 1);
+            }
+        }
+    } else {
+        // 在node中简单删除pos上的k
+        simpleRemoveInNonLeaf(node, pos);
+        blockFlush(node);
+    }
+}
+
+// 在node中删除第pos个数据
+void BPlusTree::simpleRemoveInNonLeaf(Node *node, int pos)
+{
+    int rest = node->count - pos - 1;
+    // 当pos == node->count-1时,无需移动数据
+    if (rest > 0) {
+        memmove(&key(node)[pos], &key(node)[pos + 1], rest * sizeof(key_t));
+
+        // 移动subNode时,需注意lastOffset
+        if (node->count == DEGREE) // 使用了lastOffset
+        {
+            memmove(
+                subNode(node, pos + 1),
+                subNode(node, pos + 2),
+                (rest - 1) * sizeof(off_t));
+
+            *subNode(node, node->count - 1) = *subNode(node, node->count);
+        } else { // 未使用lastOffset
+            memmove(
+                subNode(node, pos + 1),
+                subNode(node, pos + 2),
+                rest * sizeof(off_t));
+        }
+    }
+    node->count--;
+}
+
+// 非叶子节点 left->parent parent->node
+void BPlusTree::shiftNonLeafFromLeft(
+    Node *node,
+    Node *left,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    // node->count < (DEGREE + 1) / 2; 未使用lastOffset
+    if (pos != 0) {
+        memmove(&key(node)[1], &key(node)[0], pos * sizeof(key_t));
+        memmove(subNode(node, 1), subNode(node, 0), (pos + 1) * sizeof(off_t));
+    }
+
+    key(node)[0] = key(parent)[ppos];
+    key(parent)[ppos] = key(left)[left->count - 1];
+
+    // 更新subNode
+    *subNode(node, 0) = *subNode(left, left->count);
+
+    left->count--;
+}
+
+// node合并到left parent->left node->left
+void BPlusTree::mergeNonLeafIntoLeft(
+    Node *node,
+    Node *left,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    // parent->left
+    key(left)[left->count] = key(parent)[ppos];
+    left->count++;
+
+    memmove(&key(left)[left->count], &key(node)[0], pos * sizeof(key_t));
+    memmove(
+        subNode(left, left->count),
+        subNode(node, 0),
+        (pos + 1) * sizeof(off_t));
+    left->count += pos;
+
+    // node中除去删除的key,剩余需要转移到left中的key的数量
+    int rest = node->count - pos - 1;
+    if (rest > 0) {
+        memmove(
+            &key(left)[left->count], &key(node)[pos + 1], rest * sizeof(key_t));
+        // 不会涉及lastOffset
+        memmove(
+            subNode(left, left->count + 1),
+            subNode(node, pos + 2),
+            rest * sizeof(off_t));
+
+        left->count += rest;
+    }
+}
+
+// 非叶子节点 向左移动一位 parent->node right->parent
+void BPlusTree::shiftNonLeafFromRight(
+    Node *node,
+    Node *right,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    key(node)[node->count] = key(parent)[ppos];
+    key(parent)[ppos] = key(right)[0];
+
+    *subNode(node, node->count + 1) = *subNode(right, 0);
+    node->count++;
+    right->count--;
+
+    memmove(&key(right)[0], &key(right)[1], right->count * sizeof(key_t));
+    memmove(subNode(right, 0), subNode(right, 1), right->count * sizeof(off_t));
+}
+
+// right合并到node parent->node right->node
+void BPlusTree::mergeNonLeafWithRight(
+    Node *node,
+    Node *right,
+    Node *parent,
+    int ppos,
+    int pos)
+{
+    key(node)[node->count] = key(parent)[ppos];
+    node->count++;
+
+    memmove(
+        &key(node)[node->count], &key(right)[0], right->count * sizeof(key_t));
+    memmove(
+        subNode(node, node->count),
+        subNode(right, 0),
+        (right->count + 1) * sizeof(off_t));
+
+    node->count += right->count;
+}
+
 // 字符串转换为off_t
 off_t BPlusTree::pchar_2_off_t(const char *str, size_t size)
 {
@@ -954,5 +1475,29 @@ void BPlusTree::off_t_2_pchar(off_t offset, char *buf, int len)
     while (len-- > 0) {
         buf[len] = offset & 0xff;
         offset >>= 8;
+    }
+}
+
+// 打印所有叶子节点
+void BPlusTree::showLeaves()
+{
+    Node *node = locateNode(root_);
+
+    // 获取最左侧节点
+    while (!isLeaf(node)) {
+        node = locateNode(*subNode(node, 0));
+    }
+
+    // 输出每个节点的key
+    assert(node->prev == INVALID_OFFSET);
+
+    int line = 1;
+    while (node != NULL) {
+        printf("Line %d: ", line++);
+        for (int i = 0; i < node->count; i++)
+            printf("%ld ", data(node)[i]);
+        printf("\n");
+
+        node = locateNode(node->next);
     }
 }
