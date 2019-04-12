@@ -1076,7 +1076,7 @@ int BPlusTree::removeLeaf(Node *node, key_t k)
         if (ppos < 0) ppos = -ppos - 2;
 
         // 根据左右节点情况来选择
-        if (selectNode(node, left, right, ppos) == LEFT_NODE) {
+        if (selectNode(parent, left, right, ppos) == LEFT_NODE) {
             // 若left右足够多的数据,则分一个给node
             if (left->count > (DEGREE + 1) / 2) {
                 // 从left转移一位数据到node
@@ -1272,10 +1272,11 @@ void BPlusTree::removeInNonLeaf(Node *node, int pos)
                 left = fetchBlock(*subNode(parent, tppos - 1));
                 right = fetchBlock(*subNode(parent, tppos + 1));
             }
+            ppos = -ppos - 2;
         }
 
         // 选择左右节点
-        if (selectNode(node, left, right, ppos) == LEFT_NODE) {
+        if (selectNode(parent, left, right, ppos) == LEFT_NODE) {
             // left有足够多的数据,则分一个给node
             if (left->count >= (DEGREE + 1) / 2) {
                 // 非叶子节点向左转移一位
@@ -1433,7 +1434,10 @@ void BPlusTree::shiftNonLeafFromRight(
     right->count--;
 
     memmove(&key(right)[0], &key(right)[1], right->count * sizeof(key_t));
-    memmove(subNode(right, 0), subNode(right, 1), right->count * sizeof(off_t));
+    memmove(
+        subNode(right, 0),
+        subNode(right, 1),
+        (right->count + 1) * sizeof(off_t));
 }
 
 // right合并到node parent->node right->node
