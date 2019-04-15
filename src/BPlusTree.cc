@@ -59,17 +59,14 @@ BPlusTree::BPlusTree(const char *fileName, int blockSize)
     fd_ = open(fileName, O_CREAT | O_RDWR, 0644);
     assert(fd_ >= 0);
 
-    // chche分配空间
+    // cache分配空间
     rootCache_ = (Node *) malloc(blockSize_);
     for (int i = 0; i < MAX_CACHE_NUM; i++) {
         caches_[i] = (Node *) malloc(blockSize_);
     }
 
     // 若存在root,则读到缓存
-    if (root_ != INVALID_OFFSET) {
-        int len = pread(fd_, rootCache_, blockSize_, root_);
-        assert(len == blockSize_);
-    }
+    fetchRootBlock();
 }
 
 BPlusTree::~BPlusTree()
@@ -140,8 +137,6 @@ void BPlusTree::help()
 
 int BPlusTree::insert(key_t k, data_t value)
 {
-    // FIXME:如何使用root_
-    // Node *node = rootCache_;
     Node *node = locateNode(root_);
 
     // 清空traceNode_
@@ -164,7 +159,7 @@ int BPlusTree::insert(key_t k, data_t value)
     }
 
     // 新的root节点
-    Node *root = newLeaf();
+    Node *root = newLeafRoot();
     key(root)[0] = k;
     data(root)[0] = value;
     root->count = 1;
@@ -399,6 +394,9 @@ Node *BPlusTree::cacheRefer()
 // 对一个已经在使用的缓存进行占用
 void BPlusTree::cacheOccupy(Node *node)
 {
+    // 若node为rootCache,则不需要标记
+    if (node == rootCache_) return;
+
     int i = 0;
     while (node != caches_[i] && i < MAX_CACHE_NUM)
         i++;
@@ -425,7 +423,25 @@ Node *BPlusTree::newRoot()
     rootCache_->next = INVALID_OFFSET;
     rootCache_->lastOffset = INVALID_OFFSET;
 
+    rootCache_->count = 0;
+
     return rootCache_;
+}
+
+Node *BPlusTree::newLeafRoot()
+{
+    Node *node = newRoot();
+    node->type = BPLUS_TREE_LEAF;
+
+    return node;
+}
+
+Node *BPlusTree::newNonLeafRoot()
+{
+    Node *node = newRoot();
+    node->type = BPLUS_TREE_NON_LEAF;
+
+    return node;
 }
 
 Node *BPlusTree::newNode()
@@ -484,16 +500,25 @@ int BPlusTree::blockFlush(Node *node)
 
     int ret = pwrite(fd_, node, blockSize_, node->self);
     assert(ret == blockSize_);
-    // 若是root,则不用cacheDefercacheDefer
-    // if (node->self != root_)
-    cacheDefer(node);
+    // 若是root,则不用cacheDefer
+    if (node->self != root_) cacheDefer(node);
 
     return S_OK;
+}
+
+void BPlusTree::fetchRootBlock()
+{
+    if (root_ == INVALID_OFFSET) return;
+
+    int len = pread(fd_, rootCache_, blockSize_, root_);
+    assert(len == blockSize_);
 }
 
 Node *BPlusTree::fetchBlock(off_t offset)
 {
     if (offset == INVALID_OFFSET) return NULL;
+
+    if (offset == root_) return rootCache_;
 
     Node *node = cacheRefer();
     int len = pread(fd_, node, blockSize_, offset);
@@ -508,7 +533,7 @@ Node *BPlusTree::locateNode(off_t offset)
     if (offset == INVALID_OFFSET) return NULL;
 
     // 若是root,则直接返回rootcache
-    // if (offset == root_) return rootCache_;
+    if (offset == root_) return rootCache_;
 
     for (int i = 0; i < MAX_CACHE_NUM; i++) {
         if (!used_[i]) {
@@ -674,7 +699,7 @@ key_t BPlusTree::splitRightLeaf(
     right->count = DEGREE - split + 1;
 
     // (pos - split) + 1 + (DEGREE - pos) == right->count
-    if (pos != split) {
+    if (pos > split) {
         memmove(
             &key(right)[0], &key(leaf)[split], (pos - split) * sizeof(key_t));
         memmove(
@@ -686,7 +711,7 @@ key_t BPlusTree::splitRightLeaf(
     key(right)[pos - split] = k;
     data(right)[pos - split] = value;
 
-    if (pos != right->count) {
+    if (pos - split < right->count - 1) {
         memmove(
             &key(right)[pos - split + 1],
             &key(leaf)[pos],
@@ -738,19 +763,23 @@ int BPlusTree::updateParentNode(Node *leftChild, Node *rightChild, key_t k)
 {
     // 没有父节点
     if (traceNode_.empty()) {
+        off_t leftChildOffset = leftChild->self;
+        off_t rightChildOffset = rightChild->self;
+
+        // 先将左右子节点刷入内存(避免rootCache重复使用)
+        blockFlush(leftChild);
+        blockFlush(rightChild);
+
         // 创建父节点
-        Node *parent = newNonLeaf();
+        Node *parent = newNonLeafRoot();
         key(parent)[0] = k;
         parent->count = 1;
-        *subNode(parent, 0) = leftChild->self;
-        *subNode(parent, 1) = rightChild->self;
+        *subNode(parent, 0) = leftChildOffset;
+        *subNode(parent, 1) = rightChildOffset;
 
         // 设置root
         root_ = appendBlock(parent);
-
-        // 全部刷进磁盘
-        blockFlush(leftChild);
-        blockFlush(rightChild);
+        // 新的root节点刷进磁盘
         blockFlush(parent);
     } else {
         // 取出父节点并增加一个key
@@ -1051,12 +1080,11 @@ void BPlusTree::removeNode(Node *node, Node *left, Node *right)
 
     // 回收block
     unappendBlock(node);
-    cacheDefer(node);
+    if (node->self != root_) cacheDefer(node);
 }
 
 int BPlusTree::removeLeaf(Node *node, key_t k)
 {
-    // FIXME:some bugs: 数据较大时,进行数次操作以后,造成数据丢失,(数据空洞)
     int pos = searchInNode(node, k);
 
     // 不存在
@@ -1064,14 +1092,15 @@ int BPlusTree::removeLeaf(Node *node, key_t k)
 
     cacheOccupy(node);
 
-    // 没有父节点,即当前节点为root
+    // 没有父节点,即当前节点为root NOTE:node == rootCache_
     if (traceNode_.empty()) {
         // 只有一个成员,清空树
         if (node->count == 1) {
             // 删除成员必为剩余节点,只需标记root_,无需写回
             assert(k == key(node)[0]);
-            root_ = INVALID_OFFSET;
             removeNode(node, NULL, NULL);
+            // 先删除,后更新root(避免root和node不一致)
+            root_ = INVALID_OFFSET;
         } else { // 删除一个成员
             simpleRemoveInLeaf(node, pos);
             blockFlush(node);
@@ -1257,8 +1286,11 @@ void BPlusTree::removeInNonLeaf(Node *node, int pos)
         // 若node只有一个key
         if (node->count == 1) {
             assert(pos == 0);
-            root_ = *subNode(node, 0);
+            off_t nRoot = *subNode(node, 0);
             removeNode(node, NULL, NULL);
+            // 先删除node,后更新root_和rootCache_
+            root_ = nRoot;
+            fetchRootBlock();
         } else { // 删除一个key
             simpleRemoveInNonLeaf(node, pos);
             blockFlush(node);

@@ -129,9 +129,12 @@ class BPlusTree
 
     /***在内存中命名为node***/
     // 在rootCache中创建新的root
-    // FIXME:暂未使用newRoot
     // 使用思路:在locateNode和blockFlush中判断,but,traceNode_?
     Node *newRoot();
+    // 创建叶子节点root
+    Node *newLeafRoot();
+    // 创建非叶子节点root
+    Node *newNonLeafRoot();
     // 在cache中创建新的节点
     Node *newNode();
     // 在cache中创建新的非叶子节点
@@ -148,6 +151,8 @@ class BPlusTree
     void unappendBlock(Node *node);
     // block写回磁盘
     int blockFlush(Node *node);
+    // 把root读取到rootCache_中
+    void fetchRootBlock();
     // 把block取到cache中(不可覆盖)
     Node *fetchBlock(off_t offset);
     // 把block读到cache中(可覆盖)
