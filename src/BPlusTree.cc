@@ -219,7 +219,7 @@ int BPlusTree::remove(key_t k)
     }
 
     // 没找到,则返回-1
-    return -1;
+    return S_FALSE;
 }
 
 void BPlusTree::draw(Node *node, int level)
@@ -358,12 +358,24 @@ int BPlusTree::removeHandler()
         if (s2 != NULL) {
             key_t n1, n2;
             sscanf(s, "%ld-%ld", &n1, &n2);
-            for (; n1 <= n2; n1++)
-                remove(n1);
+            for (; n1 <= n2; n1++) {
+                int ret = remove(n1);
+                if (ret == S_OK)
+                    printf("%ld removed.\n", n1);
+                else
+                    printf("%ld not found.\n", n1);
+            }
             return S_OK;
         } else { // 删除一个数
             key_t n = atoi(s);
-            return remove(n);
+            int ret = remove(n);
+            if (ret == S_OK) {
+                printf("%ld removed.\n", n);
+                return S_OK;
+            } else {
+                printf("%ld not found.\n", n);
+                return S_FALSE;
+            }
         }
     }
 
@@ -382,6 +394,16 @@ Node *BPlusTree::cacheRefer()
         }
     }
     assert(0);
+}
+
+// 对一个已经在使用的缓存进行占用
+void BPlusTree::cacheOccupy(Node *node)
+{
+    int i = 0;
+    while (node != caches_[i] && i < MAX_CACHE_NUM)
+        i++;
+
+    if (i < MAX_CACHE_NUM) used_[i] = true;
 }
 
 void BPlusTree::cacheDefer(const Node *node)
@@ -461,8 +483,9 @@ int BPlusTree::blockFlush(Node *node)
     if (node == NULL) return S_FALSE;
 
     int ret = pwrite(fd_, node, blockSize_, node->self);
-    if (ret == -1) { printf("strerror: %s\n", strerror(errno)); }
     assert(ret == blockSize_);
+    // 若是root,则不用cacheDefercacheDefer
+    // if (node->self != root_)
     cacheDefer(node);
 
     return S_OK;
@@ -484,7 +507,9 @@ Node *BPlusTree::locateNode(off_t offset)
 {
     if (offset == INVALID_OFFSET) return NULL;
 
-    // REVIEW:why?
+    // 若是root,则直接返回rootcache
+    // if (offset == root_) return rootCache_;
+
     for (int i = 0; i < MAX_CACHE_NUM; i++) {
         if (!used_[i]) {
             int len = pread(fd_, caches_[i], blockSize_, offset);
@@ -540,10 +565,7 @@ int BPlusTree::insertLeaf(Node *leaf, key_t k, data_t value)
     // 恢复正确的节点位置
     pos = -pos - 1;
 
-    int i = 0;
-    while (leaf != caches_[i++])
-        ;
-    used_[--i] = true;
+    cacheOccupy(leaf);
 
     // block已满->分裂
     if (leaf->count == DEGREE) {
@@ -1034,18 +1056,13 @@ void BPlusTree::removeNode(Node *node, Node *left, Node *right)
 
 int BPlusTree::removeLeaf(Node *node, key_t k)
 {
-    // FIXME:some bugs
+    // FIXME:some bugs: 数据较大时,进行数次操作以后,造成数据丢失,(数据空洞)
     int pos = searchInNode(node, k);
 
     // 不存在
     if (pos < 0) return S_FALSE;
 
-    {
-        int i = 0;
-        while (caches_[i++] != node)
-            ;
-        used_[--i] = true;
-    }
+    cacheOccupy(node);
 
     // 没有父节点,即当前节点为root
     if (traceNode_.empty()) {
@@ -1370,10 +1387,9 @@ void BPlusTree::shiftNonLeafFromLeft(
     int pos)
 {
     // node->count < (DEGREE + 1) / 2; 未使用lastOffset
-    if (pos != 0) {
-        memmove(&key(node)[1], &key(node)[0], pos * sizeof(key_t));
-        memmove(subNode(node, 1), subNode(node, 0), (pos + 1) * sizeof(off_t));
-    }
+
+    memmove(&key(node)[1], &key(node)[0], pos * sizeof(key_t));
+    memmove(subNode(node, 1), subNode(node, 0), (pos + 1) * sizeof(off_t));
 
     key(node)[0] = key(parent)[ppos];
     key(parent)[ppos] = key(left)[left->count - 1];
@@ -1434,10 +1450,17 @@ void BPlusTree::shiftNonLeafFromRight(
     right->count--;
 
     memmove(&key(right)[0], &key(right)[1], right->count * sizeof(key_t));
-    memmove(
-        subNode(right, 0),
-        subNode(right, 1),
-        (right->count + 1) * sizeof(off_t));
+    // 注意lastOffset
+    if (right->count + 1 == DEGREE) {
+        memmove(
+            subNode(right, 0), subNode(right, 1), right->count * sizeof(off_t));
+        *subNode(right, right->count) = right->lastOffset;
+    } else {
+        memmove(
+            subNode(right, 0),
+            subNode(right, 1),
+            (right->count + 1) * sizeof(off_t));
+    }
 }
 
 // right合并到node parent->node right->node
@@ -1485,6 +1508,11 @@ void BPlusTree::off_t_2_pchar(off_t offset, char *buf, int len)
 // 打印所有叶子节点
 void BPlusTree::showLeaves()
 {
+    for (int i = 0; i < MAX_CACHE_NUM; i++)
+        printf("used_[%d] = %d\n", i, used_[i]);
+
+    if (root_ == INVALID_OFFSET) return;
+
     Node *node = locateNode(root_);
 
     // 获取最左侧节点
@@ -1504,4 +1532,7 @@ void BPlusTree::showLeaves()
 
         node = locateNode(node->next);
     }
+
+    for (int i = 0; i < MAX_CACHE_NUM; i++)
+        printf("used_[%d] = %d\n", i, used_[i]);
 }

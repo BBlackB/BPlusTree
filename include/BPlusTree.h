@@ -122,6 +122,8 @@ class BPlusTree
 
     // 占用一个缓存
     Node *cacheRefer();
+    // 对node使用缓存占用
+    void cacheOccupy(Node *node);
     // 释放一个缓存
     void cacheDefer(const Node *node);
 
